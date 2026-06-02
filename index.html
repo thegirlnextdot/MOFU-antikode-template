@@ -1,0 +1,2261 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>MOFU Template</title>
+
+  <!-- DOM → canvas (handles CSS masks via SVG foreignObject) -->
+  <script src="https://cdn.jsdelivr.net/npm/html-to-image@1.11.13/dist/html-to-image.min.js"></script>
+  <!-- mp4-muxer (ESM) — exposed on window for the regular script below -->
+  <script type="module">
+    try {
+      const m = await import('https://cdn.jsdelivr.net/npm/mp4-muxer@5.2.1/+esm');
+      window.Mp4Muxer = { Muxer: m.Muxer, ArrayBufferTarget: m.ArrayBufferTarget };
+      window.dispatchEvent(new Event('mp4muxer:ready'));
+    } catch (e) {
+      console.warn('mp4-muxer failed to load', e);
+    }
+  </script>
+  <style>
+    @import url('https://fonts.cdnfonts.com/css/proxima-nova-2');
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      background: #1a1a1a;
+      font-family: 'Proxima Nova', sans-serif;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 24px;
+      gap: 24px;
+    }
+
+    .workspace {
+      display: flex;
+      gap: 20px;
+      align-items: flex-start;
+    }
+
+    /* ---------- Section nav (editing-only, never rendered to output) ---------- */
+    .section-nav {
+      width: 220px;
+      background: #2a2a2a;
+      color: white;
+      padding: 16px;
+      border-radius: 12px;
+      font-size: 13px;
+      position: sticky;
+      top: 24px;
+    }
+
+    .section-nav h3 {
+      margin-bottom: 12px;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 2px;
+      color: #999;
+      font-weight: 600;
+    }
+
+    .section-nav ul {
+      list-style: none;
+    }
+
+    .section-nav li {
+      padding: 8px 10px;
+      border-radius: 6px;
+      cursor: pointer;
+      margin-bottom: 4px;
+      transition: background 0.12s, color 0.12s;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .section-nav li::before {
+      content: "";
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #555;
+      flex-shrink: 0;
+    }
+
+    .section-nav li:hover {
+      background: #3a3a3a;
+    }
+
+    .section-nav li.is-active {
+      background: #66B2FF;
+      color: black;
+      font-weight: 600;
+    }
+
+    .section-nav li.is-active::before {
+      background: black;
+    }
+
+    .section-nav .nav-hint {
+      margin-top: 14px;
+      font-size: 11px;
+      color: #888;
+      line-height: 1.5;
+    }
+
+    /* Highlight + selection treatment on the template elements */
+    .editable.is-highlighted {
+      outline: 2px solid #B1EF42 !important;
+      outline-offset: 8px;
+    }
+
+    .editable.is-selected {
+      outline: 2px dashed #66B2FF !important;
+      outline-offset: 6px;
+    }
+
+    .editable.is-selected>.edit-handle {
+      opacity: 1;
+      pointer-events: auto;
+    }
+
+    /* ---------- Control panel ---------- */
+    .controls {
+      width: 540px;
+      background: #2a2a2a;
+      color: white;
+      padding: 20px;
+      border-radius: 12px;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+      font-size: 13px;
+    }
+
+    .controls label {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      cursor: pointer;
+    }
+
+    .controls .full {
+      grid-column: 1 / -1;
+    }
+
+    .controls input[type="file"],
+    .controls input[type="number"],
+    .controls button {
+      background: #3a3a3a;
+      color: white;
+      border: 1px solid #555;
+      padding: 8px;
+      border-radius: 6px;
+      font-family: inherit;
+      font-size: 12px;
+      cursor: pointer;
+    }
+
+    .controls button:hover {
+      background: #4a4a4a;
+    }
+
+    .controls .hint {
+      color: #999;
+      font-size: 11px;
+    }
+
+    .controls .row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 13px;
+    }
+
+    /* Template switcher tabs */
+    .template-tabs {
+      grid-column: 1 / -1;
+      display: flex;
+      gap: 8px;
+    }
+
+    .template-tabs button {
+      flex: 1;
+      padding: 10px 8px;
+    }
+
+    .template-tabs button.is-active {
+      background: #B1EF42;
+      color: black;
+      border-color: #B1EF42;
+      font-weight: 600;
+    }
+
+    /* ---------- Stage wrappers ---------- */
+    .stage {
+      position: relative;
+      overflow: hidden;
+      background: black;
+      box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
+    }
+
+    .stage-1 {
+      width: 540px;
+      height: 960px;
+    }
+
+    .stage-1 .template {
+      transform: scale(0.5);
+      transform-origin: top left;
+    }
+
+    .stage-2 {
+      width: 744px;
+      height: 400px;
+    }
+
+    /* ---------- Template 1 (1080 x 1920) ---------- */
+    .template {
+      width: 1080px;
+      height: 1920px;
+      position: relative;
+      background: white;
+      overflow: hidden;
+    }
+
+    /* Optional grid overlay */
+    .template.show-grid::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background-image:
+        linear-gradient(to right, rgba(177, 239, 66, 0.18) 1px, transparent 1px),
+        linear-gradient(to bottom, rgba(177, 239, 66, 0.18) 1px, transparent 1px);
+      background-size: var(--grid-size, 10px) var(--grid-size, 10px);
+      pointer-events: none;
+      z-index: 90;
+    }
+
+    /* Background video layer */
+    .bg-media {
+      width: 1080px;
+      height: 1921px;
+      left: 0;
+      top: 0;
+      position: absolute;
+      overflow: hidden;
+      background: #FF0000;
+    }
+
+    .bg-media video,
+    .bg-media img.bg-fallback {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      position: absolute;
+      top: 0;
+      left: 0;
+    }
+
+    /* Bottom black gradient */
+    .gradient {
+      width: 1080px;
+      height: 1118.32px;
+      left: 0;
+      top: 801.68px;
+      position: absolute;
+      background: linear-gradient(180deg, rgba(0, 0, 0, 0) 0%, black 59%);
+      pointer-events: none;
+    }
+
+    /* Glow ellipses (bottom area) — animated together as a group */
+    .t1-glows {
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+    }
+
+    .t1-glow-1 {
+      width: 986.81px;
+      height: 549.20px;
+      left: 601.59px;
+      top: 1755.72px;
+      position: absolute;
+      transform: rotate(141deg);
+      transform-origin: top left;
+      background: linear-gradient(259deg, rgba(5, 64, 82, 0.50) 24%, rgba(3, 25, 33, 0) 100%);
+      filter: blur(107px);
+    }
+
+    .t1-glow-2 {
+      width: 378.04px;
+      height: 689.78px;
+      left: 378.46px;
+      top: 1862.84px;
+      position: absolute;
+      transform: rotate(80deg);
+      transform-origin: top left;
+      opacity: 0.45;
+      background: linear-gradient(157deg, rgba(22, 22, 22, 0) 0%, rgba(255, 255, 255, 0.30) 100%);
+      filter: blur(84px);
+    }
+
+    /* Author photo (green square) */
+    .author-photo {
+      width: 120.26px;
+      height: 120.61px;
+      left: 63.89px;
+      top: 1578.32px;
+      position: absolute;
+      background: #B1EF42;
+      cursor: pointer;
+    }
+
+    /* Inner clip layer: crops the zoomed photo without clipping the edit handles */
+    .photo-clip {
+      position: absolute;
+      inset: 0;
+      overflow: hidden;
+    }
+
+    .photo-clip img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: block;
+    }
+
+    /* Author text block */
+    .written-by {
+      width: 298px;
+      height: 16px;
+      left: 210px;
+      top: 1580px;
+      position: absolute;
+      opacity: 0.50;
+      color: white;
+      font-size: 20px;
+      font-weight: 400;
+      text-transform: uppercase;
+      line-height: 20px;
+      letter-spacing: 6px;
+    }
+
+    .author-name {
+      width: 386.583px;
+      left: 210px;
+      top: 1630px;
+      position: absolute;
+      color: white;
+      font-size: 34px;
+      font-weight: 400;
+      text-transform: capitalize;
+      line-height: 34px;
+    }
+
+    .author-role {
+      width: 297px;
+      left: 210px;
+      top: 1680px;
+      position: absolute;
+      opacity: 0.50;
+      color: white;
+      font-size: 20px;
+      font-weight: 400;
+      line-height: 20px;
+    }
+
+    /* INSIGHT dot (parent of the label so they animate as a group) */
+    .insight-dot {
+      width: 13px;
+      height: 13px;
+      left: 64px;
+      top: 1182px;
+      position: absolute;
+      background: white;
+      border-radius: 9999px;
+      /* overflow visible so the label child can extend outside the circle */
+    }
+
+    /* INSIGHT label — positioned RELATIVE to the dot now */
+    .insight-label {
+      width: 150px;
+      height: 10px;
+      left: 28px;
+      /* 92 (absolute) - 64 (dot left) */
+      top: -3px;
+      /* 1179 - 1182 */
+      position: absolute;
+      color: white;
+      font-size: 20px;
+      font-weight: 600;
+      text-transform: uppercase;
+      line-height: 20px;
+      letter-spacing: 6px;
+    }
+
+    /* Logo (top-left) */
+    .logo {
+      width: 198.385px;
+      height: 28.44px;
+      left: 64px;
+      top: 150px;
+      position: absolute;
+    }
+
+    .logo img {
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+
+    /* Title + meta block */
+    .text-block {
+      width: 952.323px;
+      height: auto;
+      left: 63.67px;
+      top: 1244.45px;
+      position: absolute;
+      display: inline-flex;
+      flex-direction: column;
+      justify-content: flex-start;
+      align-items: flex-start;
+      gap: 13px;
+      min-width: 200px;
+      min-height: 50px;
+      max-width: 1080px;
+    }
+
+    .title {
+      align-self: stretch;
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+      color: white;
+      font-size: 74px;
+      font-weight: 400;
+      line-height: 81.40px;
+      word-wrap: break-word;
+    }
+
+    .title-line {
+      --reveal: 9999px;
+      /* default: fully revealed (no mask cut) */
+      --feather: 94px;
+      width: fit-content;
+      max-width: 100%;
+      -webkit-mask-image: linear-gradient(to right,
+          black calc(var(--reveal) - var(--feather)),
+          transparent var(--reveal));
+      mask-image: linear-gradient(to right,
+          black calc(var(--reveal) - var(--feather)),
+          transparent var(--reveal));
+    }
+
+    .meta {
+      align-self: stretch;
+      opacity: 0.50;
+      color: white;
+      font-size: 30px;
+      font-weight: 400;
+      line-height: 39px;
+      word-wrap: break-word;
+    }
+
+    .meta .topic {
+      text-transform: capitalize;
+    }
+
+    .meta .dash {
+      text-transform: uppercase;
+      letter-spacing: 2.10px;
+    }
+
+    .meta .read {
+      text-transform: lowercase;
+    }
+
+    /* Rotated bottom overlay image */
+    .overlay-rotated {
+      width: 1920px;
+      height: 1080px;
+      left: 0;
+      top: 1920px;
+      position: absolute;
+      transform: rotate(-90deg);
+      transform-origin: top left;
+      opacity: 0.10;
+      pointer-events: none;
+    }
+
+    .overlay-rotated img,
+    .overlay-rotated video {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: block;
+    }
+
+    /* ---------- Template 2 — Insight Card (744 x 400) ---------- */
+    .template2 {
+      width: 744px;
+      height: 400px;
+      background: black;
+    }
+
+    /* Black panel: slides up from the bottom (4s → 6s). Parents the glows + vertical
+       line, and clips them so nothing bleeds over the video strip above. */
+    .t2-blackbox {
+      /* 2px black borders bleed past the left/right/bottom edges so no background
+         leaks through at the fractional-pixel seams. With border-box sizing the
+         inner (clip) area stays exactly 744 x 260.05 at the same origin, so
+         nothing inside shifts. Top edge has no border — it must reveal the video. */
+      width: 748px;
+      /* 744 + 2 left + 2 right */
+      height: 262.05px;
+      /* 260.05 + 2 bottom */
+      left: -2px;
+      top: 139.95px;
+      position: absolute;
+      background: black;
+      overflow: hidden;
+      border-left: 2px solid black;
+      border-right: 2px solid black;
+      border-bottom: 2px solid black;
+    }
+
+    /* Background glow decorations (inside the black box; tops are relative to it) */
+    .t2-glow-1 {
+      width: 900.64px;
+      height: 501.24px;
+      left: 0.32px;
+      top: 169px;
+      /* 308.95 - 139.95 */
+      position: absolute;
+      transform: rotate(321deg);
+      transform-origin: top left;
+      background: linear-gradient(259deg, rgba(5, 64, 82, 0.50) 24%, rgba(3, 25, 33, 0) 100%);
+      filter: blur(43.57px);
+      pointer-events: none;
+    }
+
+    .t2-glow-2 {
+      width: 345.03px;
+      height: 629.54px;
+      left: 203.97px;
+      top: 532.07px;
+      /* 672.02 - 139.95 */
+      position: absolute;
+      transform: rotate(260deg);
+      transform-origin: top left;
+      opacity: 0.45;
+      background: linear-gradient(157deg, rgba(22, 22, 22, 0) 0%, rgba(255, 255, 255, 0.30) 100%);
+      filter: blur(34.21px);
+      pointer-events: none;
+    }
+
+    /* LinkedIn logo (bottom-left, replaces the old tick line) */
+    .t2-linkedin {
+      width: 7px;
+      height: 50px;
+      left: 22.56px;
+      top: 323.34px;
+      position: absolute;
+    }
+
+    .t2-linkedin img {
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+
+    /* Author group: fills the black box; counter-translated during the box's slide
+       so its contents stay fixed on the canvas while the box edge reveals them */
+    .t2-authorgroup {
+      position: absolute;
+      inset: 0;
+    }
+
+    /* Vertical line (line.svg) — child of the black box, so it rides up with it */
+    .t2-line {
+      width: 1px;
+      height: 260.05px;
+      left: 50px;
+      top: 0;
+      /* relative to the black box (was 140 on the canvas) */
+      position: absolute;
+    }
+
+    .t2-line img {
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+
+    /* INSIGHT vertical group (wrapper so label + dot move together) */
+    .t2-insight {
+      width: 18px;
+      height: 64px;
+      left: 16px;
+      top: 160px;
+      position: absolute;
+    }
+
+    .t2-insight-label {
+      width: 51.01px;
+      height: 15.31px;
+      left: 2.2px;
+      /* 18.20 - 16 */
+      top: 56.66px;
+      /* 216.66 - 160 */
+      position: absolute;
+      transform: rotate(-90deg);
+      transform-origin: top left;
+      text-align: right;
+      color: white;
+      font-size: 10px;
+      font-weight: 600;
+      text-transform: uppercase;
+      line-height: 13px;
+      letter-spacing: 1.60px;
+    }
+
+    .t2-insight-dot {
+      width: 6.44px;
+      height: 6.44px;
+      left: 5.7px;
+      /* 21.70 - 16 */
+      top: 57.42px;
+      /* visual top after the export's rotation */
+      position: absolute;
+      background: white;
+      border-radius: 9999px;
+    }
+
+    /* Title */
+    .t2-title {
+      width: 616.42px;
+      left: 89.14px;
+      top: 165.65px;
+      position: absolute;
+      color: white;
+      font-size: 35px;
+      font-weight: 400;
+      line-height: 38.50px;
+      word-wrap: break-word;
+    }
+
+    /* Per-line mask reveal (same mechanism as template 1, feather 76px) */
+    .t2-title-line {
+      --reveal: 9999px;
+      /* default: fully revealed (no mask cut) */
+      --feather: 76px;
+      width: fit-content;
+      max-width: 100%;
+      -webkit-mask-image: linear-gradient(to right,
+          black calc(var(--reveal) - var(--feather)),
+          transparent var(--reveal));
+      mask-image: linear-gradient(to right,
+          black calc(var(--reveal) - var(--feather)),
+          transparent var(--reveal));
+    }
+
+    /* Topic / read time */
+    .t2-meta {
+      width: 200px;
+      left: 89.33px;
+      top: 324px;
+      position: absolute;
+      opacity: 0.50;
+      color: white;
+      font-size: 12px;
+      font-weight: 400;
+      text-transform: capitalize;
+      line-height: 15.60px;
+      word-wrap: break-word;
+    }
+
+    /* Written by block */
+    .t2-writtenby {
+      width: 80px;
+      height: 10px;
+      left: 603.57px;
+      top: 183.03px;
+      /* 322.98 - 139.95 (relative to black box) */
+      position: absolute;
+      color: #909DA5;
+      font-size: 10px;
+      font-weight: 400;
+      text-transform: uppercase;
+      line-height: 10px;
+      letter-spacing: 1.60px;
+      white-space: nowrap;
+    }
+
+    .t2-author {
+      width: 50.25px;
+      left: 603.57px;
+      top: 209.37px;
+      /* 349.32 - 139.95 */
+      position: absolute;
+      color: white;
+      font-size: 13px;
+      font-weight: 400;
+      text-transform: capitalize;
+      line-height: 12px;
+      white-space: nowrap;
+    }
+
+    .t2-role {
+      width: 80px;
+      height: 10px;
+      left: 604px;
+      top: 225.05px;
+      /* 365 - 139.95 */
+      position: absolute;
+      color: rgba(255, 255, 255, 0.50);
+      font-size: 10px;
+      font-weight: 400;
+      text-transform: capitalize;
+      line-height: 12px;
+      white-space: nowrap;
+    }
+
+    /* Top media bar (red placeholder → video/image upload target) */
+    .t2-media {
+      /* fullscreen — bleeds 2px past every edge so the canvas corners are always
+         filled with video, no seams (the template clips the overflow) */
+      width: 748px;
+      height: 404px;
+      left: -2px;
+      top: -2px;
+      position: absolute;
+      overflow: hidden;
+      background: #FF0000;
+    }
+
+    .t2-media video,
+    .t2-media img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      position: absolute;
+      top: 0;
+      left: 0;
+    }
+
+    /* Author photo (green square) */
+    .t2-photo {
+      width: 50px;
+      height: 50px;
+      left: 543.68px;
+      top: 184.44px;
+      /* 324.39 - 139.95 */
+      position: absolute;
+      background: #B1EF42;
+      cursor: pointer;
+    }
+
+    /* Template 2 is shown at 1:1 — shrink the edit handles so they don't swallow small elements */
+    .template2 .edit-handle {
+      width: 28px;
+      height: 28px;
+      font-size: 14px;
+      border-width: 3px;
+    }
+
+    .template2 .move-handle {
+      left: -14px;
+      top: -14px;
+    }
+
+    .template2 .resize-handle {
+      right: -14px;
+      bottom: -14px;
+    }
+
+    /* ---------- Editable system (move + resize handles) ---------- */
+    .editable:hover {
+      outline: 1px dashed rgba(177, 239, 66, 0.7);
+      outline-offset: 6px;
+    }
+
+    .edit-handle {
+      position: absolute;
+      width: 56px;
+      height: 56px;
+      border-radius: 50%;
+      border: 4px solid black;
+      z-index: 100;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.12s;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: black;
+      font-size: 28px;
+      line-height: 1;
+      font-weight: 700;
+      user-select: none;
+    }
+
+    .editable:hover>.edit-handle,
+    .edit-handle.is-active {
+      opacity: 1;
+      pointer-events: auto;
+    }
+
+    .edit-handle.move-handle {
+      background: #66B2FF;
+      left: -28px;
+      top: -28px;
+      cursor: move;
+    }
+
+    .edit-handle.resize-handle {
+      background: #B1EF42;
+      right: -28px;
+      bottom: -28px;
+      cursor: nwse-resize;
+    }
+
+    /* During export: kill ALL editing chrome so none of it can end up in the video —
+       selection/hover/highlight outlines, text-editing focus ring, grid, handles */
+    .template.is-exporting .editable,
+    .template.is-exporting .editable:hover,
+    .template.is-exporting .editable.is-selected,
+    .template.is-exporting .editable.is-highlighted {
+      outline: none !important;
+    }
+
+    .template.is-exporting [contenteditable="true"]:focus {
+      box-shadow: none !important;
+    }
+
+    .template.is-exporting .edit-handle {
+      display: none !important;
+    }
+
+    .template.is-exporting.show-grid::after {
+      display: none !important;
+    }
+
+    /* Live coordinate / size readout */
+    .live-readout {
+      position: fixed;
+      background: #B1EF42;
+      color: black;
+      font-family: ui-monospace, Menlo, Consolas, monospace;
+      font-size: 12px;
+      font-weight: 600;
+      padding: 4px 8px;
+      border-radius: 4px;
+      pointer-events: none;
+      z-index: 9999;
+      display: none;
+    }
+
+    .live-readout.is-visible {
+      display: block;
+    }
+
+    /* Editable text (contenteditable) styling */
+    [contenteditable="true"] {
+      outline: none;
+    }
+
+    [contenteditable="true"]:focus {
+      box-shadow: inset 0 0 0 2px #B1EF42;
+    }
+
+    /* ---------- Timeline panel ---------- */
+    .timeline-panel {
+      width: 780px;
+      background: #2a2a2a;
+      color: white;
+      padding: 16px 20px;
+      border-radius: 12px;
+      font-size: 13px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .timeline-row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .timeline-panel button {
+      background: #3a3a3a;
+      color: white;
+      border: 1px solid #555;
+      padding: 8px 14px;
+      border-radius: 6px;
+      font-family: inherit;
+      font-size: 13px;
+      cursor: pointer;
+    }
+
+    .timeline-panel button:hover {
+      background: #4a4a4a;
+    }
+
+    .timeline-panel button.is-active {
+      background: #B1EF42;
+      color: black;
+      border-color: #B1EF42;
+    }
+
+    .frame-display {
+      font-family: ui-monospace, Menlo, Consolas, monospace;
+      color: #B1EF42;
+      margin-left: auto;
+    }
+
+    #timeline {
+      width: 100%;
+      -webkit-appearance: none;
+      height: 8px;
+      background: #1a1a1a;
+      border-radius: 4px;
+      outline: none;
+    }
+
+    #timeline::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 18px;
+      height: 18px;
+      background: #B1EF42;
+      border-radius: 50%;
+      cursor: pointer;
+      border: 2px solid black;
+    }
+
+    #timeline::-moz-range-thumb {
+      width: 18px;
+      height: 18px;
+      background: #B1EF42;
+      border-radius: 50%;
+      cursor: pointer;
+      border: 2px solid black;
+    }
+
+    .timeline-hint {
+      color: #888;
+      font-size: 11px;
+    }
+  </style>
+</head>
+
+<body>
+
+  <div class="controls">
+    <div class="template-tabs">
+      <button id="tabT1" type="button" class="is-active">1 · Story 1080×1920</button>
+      <button id="tabT2" type="button">2 · Insight Card 744×400</button>
+    </div>
+
+    <label class="full">
+      <span>Background video <span class="hint">(mp4/webm — goes into the active template)</span></span>
+      <input type="file" id="videoInput" accept="video/*" />
+    </label>
+
+    <label>
+      <span>Author photo <span class="hint">(image)</span></span>
+      <input type="file" id="photoInput" accept="image/*" />
+    </label>
+
+    <label>
+      <span>Rotated overlay <span class="hint">(image — template 1 only)</span></span>
+      <input type="file" id="overlayInput" accept="image/*" />
+    </label>
+
+    <div class="row">
+      <input type="checkbox" id="snapToggle" checked />
+      <label for="snapToggle">Snap to grid</label>
+    </div>
+    <div class="row">
+      <input type="checkbox" id="gridToggle" />
+      <label for="gridToggle">Show grid</label>
+    </div>
+    <div class="row full">
+      <input type="checkbox" id="loopToggle" checked />
+      <label for="loopToggle">Loop video when it's shorter than 10s <span class="hint">(off = freeze on its last
+          frame)</span></label>
+    </div>
+    <div class="row full">
+      <label for="gridSize" style="flex-direction:row; align-items:center;">Grid size (px):</label>
+      <input type="number" id="gridSize" value="10" min="1" max="100" style="width:80px;" />
+      <span class="hint">drag = blue · resize = green</span>
+    </div>
+
+    <button id="undoBtn" type="button" title="Ctrl+Z">↶ Undo</button>
+    <button id="redoBtn" type="button" title="Ctrl+Shift+Z">↷ Redo</button>
+
+    <button class="full" id="copyCssBtn" type="button">Copy CSS of current positions (active template)</button>
+    <button class="full" id="resetBtn" type="button">Reset active template to Figma defaults</button>
+  </div>
+
+  <div class="workspace">
+
+    <nav class="section-nav" aria-label="Template sections">
+      <h3>Sections</h3>
+      <ul id="sectionList"></ul>
+      <p class="nav-hint">Click any element (or its name here) to select it — its handles stay pinned · Esc / click
+        empty canvas to deselect<br><br>Move: drag the body, <b>Alt+drag</b> (works on text too), or <b>arrow keys</b>
+        (Shift = 10px)</p>
+    </nav>
+
+    <div class="stage stage-1" id="stage1">
+      <div class="template" id="template" style="--grid-size: 10px;">
+
+        <!-- Background (video upload target) -->
+        <div class="bg-media" id="bgMedia" title="Scroll: zoom video · Ctrl+drag: reposition video"></div>
+
+        <!-- Bottom gradient -->
+        <div class="gradient"></div>
+
+        <!-- Glow ellipses (fade + drift in at f120–f144) -->
+        <div class="t1-glows">
+          <div class="t1-glow-1"></div>
+          <div class="t1-glow-2"></div>
+        </div>
+
+        <!-- Rotated overlay -->
+        <div class="overlay-rotated" id="overlayRotated"></div>
+
+        <!-- Logo (editable) -->
+        <div class="logo" data-editable data-lock-aspect="true" data-name="Logo">
+          <img src="Logo.svg" alt="Logo" />
+        </div>
+
+        <!-- Insight group: dot is parent, label is child (animate together) -->
+        <div class="insight-dot" data-editable data-lock-aspect="true" data-name="Insight dot" data-anim-id="insight">
+          <div class="insight-label" data-editable data-name="Insight label" contenteditable="true">INSIGHT</div>
+        </div>
+
+        <!-- Title + meta block (editable) -->
+        <div class="text-block" data-editable data-name="Title & meta">
+          <div class="title">
+            <div class="title-line" contenteditable="true">Junior Designers in</div>
+            <div class="title-line" contenteditable="true">the AI Era: The Evolution</div>
+            <div class="title-line" contenteditable="true">of Creative Value</div>
+          </div>
+          <div class="meta">
+            <span class="topic" contenteditable="true">Experience Topic</span><span class="dash"> - 4 </span><span
+              class="read" contenteditable="true">min. read</span>
+          </div>
+        </div>
+
+        <!-- Author photo (editable + upload target) -->
+        <div class="author-photo" id="authorPhoto" data-editable data-lock-aspect="true" data-name="Author photo"
+          title="Click: upload photo · Scroll: zoom · Ctrl+drag: reposition crop">
+          <div class="photo-clip"></div>
+        </div>
+
+        <!-- Author info (each line editable) -->
+        <div class="written-by" data-editable data-name="Written by" contenteditable="true">Written BY</div>
+        <div class="author-name" data-editable data-name="Author name" contenteditable="true">Don Ario</div>
+        <div class="author-role" data-editable data-name="Author role" contenteditable="true">Sr. UI/UX Designer</div>
+
+      </div>
+    </div>
+
+    <div class="stage stage-2" id="stage2" style="display:none;">
+      <div class="template template2" id="template2" style="--grid-size: 10px;">
+
+        <!-- Fullscreen video (bottom layer; upload target) -->
+        <div class="t2-media" id="t2Media" data-editable data-name="Background video"
+          title="Scroll: zoom video · Ctrl+drag: reposition video"></div>
+
+        <!-- Black panel: slides up from the bottom at 4s–6s, carries glows + line.
+             Also masks the WRITTEN BY → author photo block (placed after the glows,
+             so it renders in front of the gradients). -->
+        <div class="t2-blackbox">
+          <div class="t2-glow-1" data-base-transform="rotate(321deg)"></div>
+          <div class="t2-glow-2" data-base-transform="rotate(260deg)"></div>
+          <div class="t2-line" data-editable data-name="Vertical line">
+            <img src="line.svg" alt="" />
+          </div>
+
+          <!-- Written by → author photo: masked by the black box but NOT moving with it.
+               The group counter-translates against the box's slide (same frames + easing),
+               so these stay fixed on the canvas and the box's top edge reveals them. -->
+          <div class="t2-authorgroup">
+            <div class="t2-writtenby" data-editable data-name="Written by" contenteditable="true">WRITTEN BY</div>
+            <div class="t2-author" data-editable data-name="Author name" contenteditable="true">Don Ario</div>
+            <div class="t2-role" data-editable data-name="Author role" contenteditable="true">Sr. UI/UX Designer</div>
+            <div class="t2-photo" id="t2Photo" data-editable data-lock-aspect="true" data-name="Author photo"
+              title="Click: upload photo · Scroll: zoom · Ctrl+drag: reposition crop">
+              <div class="photo-clip"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- LinkedIn logo (bottom-left) -->
+        <div class="t2-linkedin" data-editable data-lock-aspect="true" data-name="LinkedIn logo">
+          <img src="logo_linkedin.svg" alt="LinkedIn" />
+        </div>
+
+        <!-- INSIGHT vertical group -->
+        <div class="t2-insight" data-editable data-name="Insight label">
+          <div class="t2-insight-label" contenteditable="true">INSIGHT</div>
+          <div class="t2-insight-dot"></div>
+        </div>
+
+        <!-- Title (two lines, each with its own mask reveal) -->
+        <div class="t2-title" data-editable data-name="Title">
+          <div class="t2-title-line" contenteditable="true">Junior Designers in the AI Era:</div>
+          <div class="t2-title-line" contenteditable="true">The Evolution of Creative Value</div>
+        </div>
+
+        <!-- Topic / read time -->
+        <div class="t2-meta" data-editable data-name="Topic & read time" contenteditable="true">Experience Topic - 4
+          min. read</div>
+
+      </div>
+    </div>
+
+  </div>
+
+  <div class="live-readout" id="liveReadout"></div>
+
+  <div class="timeline-panel">
+    <div class="timeline-row">
+      <button id="modeBtn" type="button">Edit mode</button>
+      <button id="playBtn" type="button">▶ Play</button>
+      <button id="stopBtn" type="button">⏹ Stop</button>
+      <button id="exportBtn" type="button"
+        style="margin-left:auto; background:#B1EF42; color:black; border-color:#B1EF42; font-weight:600;">⬇ Export MP4
+        (10s)</button>
+      <span class="frame-display" id="frameDisplay">000 / 240 · 0.00s / 10.00s · 24fps</span>
+    </div>
+    <input type="range" id="timeline" min="0" max="239" value="0" step="1" />
+    <div class="timeline-hint" id="timelineHint">Drag the slider to scrub. Switch to Preview mode to see animations
+      applied at the current frame.</div>
+  </div>
+
+  <script>
+    // ====== Template registry ======
+    const templates = [
+      {
+        key: 't1', name: 'Story 1080×1920',
+        el: document.getElementById('template'),
+        stage: document.getElementById('stage1'),
+        scale: 0.5, width: 1080, height: 1920, exportScale: 1,
+        fileName: 'mofu-story.mp4',
+        media: document.getElementById('bgMedia'),
+        photo: document.getElementById('authorPhoto'),
+      },
+      {
+        key: 't2', name: 'Insight Card 744×400',
+        el: document.getElementById('template2'),
+        stage: document.getElementById('stage2'),
+        scale: 1, width: 744, height: 400, exportScale: 2,
+        fileName: 'mofu-card.mp4',
+        media: document.getElementById('t2Media'),
+        photo: document.getElementById('t2Photo'),
+      },
+    ];
+    let active = templates[0];
+
+    function tplFor(el) { return templates.find(t => t.el.contains(el)); }
+
+    templates.forEach(t => {
+      t.editables = Array.from(t.el.querySelectorAll('[data-editable]'));
+    });
+    const editableEls = templates.flatMap(t => t.editables);
+
+    // ====== Upload wiring ======
+    const videoInput = document.getElementById('videoInput');
+    const photoInput = document.getElementById('photoInput');
+    const overlayInput = document.getElementById('overlayInput');
+    const resetBtn = document.getElementById('resetBtn');
+    const overlayRotated = document.getElementById('overlayRotated');
+
+    // Swap media inside a container WITHOUT nuking edit handles
+    function setMedia(container, node) {
+      container.querySelectorAll('video, img').forEach(n => n.remove());
+      container.insertBefore(node, container.firstChild);
+    }
+
+    videoInput.addEventListener('change', (e) => {
+      const file = e.target.files[0]; if (!file) return;
+      const url = URL.createObjectURL(file);
+      const video = document.createElement('video');
+      // No autoplay: the video sits on its first frame and only runs via the Play
+      // button, locked to the timeline (an autoplaying loop drifts out of sync and
+      // looks like a glitch).
+      Object.assign(video, { src: url, loop: loopToggle.checked, muted: true, playsInline: true, preload: 'auto' });
+      setMedia(active.media, video);
+      cropState.set(active.media, { zoom: 1, x: 0, y: 0 });  // fresh video = fresh framing
+      applyCrop(active.media);
+    });
+
+    // Click photo box → trigger file picker (only if not grabbing handles / just dragged)
+    let photoTarget = null;
+    templates.forEach(t => {
+      t.photo.addEventListener('click', (e) => {
+        if (e.target.classList.contains('edit-handle')) return;
+        if (e.ctrlKey) return;             // Ctrl+drag is for repositioning the crop
+        if (window.__justDragged) return;  // a move-drag just ended on this element
+        photoTarget = t.photo;
+        photoInput.click();
+      });
+    });
+    photoInput.addEventListener('change', (e) => {
+      const file = e.target.files[0]; if (!file) return;
+      const url = URL.createObjectURL(file);
+      const img = document.createElement('img');
+      img.src = url;
+      const box = photoTarget || active.photo;
+      setMedia(box.querySelector('.photo-clip'), img);
+      cropState.set(box, { zoom: 1, x: 0, y: 0 });  // fresh photo = fresh crop
+      applyCrop(box);
+      photoTarget = null;
+    });
+
+    overlayInput.addEventListener('change', (e) => {
+      const file = e.target.files[0]; if (!file) return;
+      const url = URL.createObjectURL(file);
+      overlayRotated.innerHTML = '';
+      const img = document.createElement('img');
+      img.src = url;
+      overlayRotated.appendChild(img);
+    });
+
+    // ====== Editable system (move + resize + snap) ======
+    const snapToggle = document.getElementById('snapToggle');
+    const gridToggle = document.getElementById('gridToggle');
+    const gridSizeInput = document.getElementById('gridSize');
+    const liveReadout = document.getElementById('liveReadout');
+    const loopToggle = document.getElementById('loopToggle');
+
+    // Apply loop/freeze choice to any already-uploaded videos immediately
+    loopToggle.addEventListener('change', () => {
+      templates.forEach(t => {
+        const v = t.media.querySelector('video');
+        if (v) v.loop = loopToggle.checked;
+      });
+    });
+
+    let gridSize = parseInt(gridSizeInput.value, 10) || 10;
+    let snapEnabled = snapToggle.checked;
+
+    function snap(v) { return snapEnabled ? Math.round(v / gridSize) * gridSize : v; }
+
+    snapToggle.addEventListener('change', () => { snapEnabled = snapToggle.checked; });
+    gridToggle.addEventListener('change', () => {
+      active.el.classList.toggle('show-grid', gridToggle.checked);
+    });
+    gridSizeInput.addEventListener('input', () => {
+      const v = Math.max(1, parseInt(gridSizeInput.value, 10) || 10);
+      gridSize = v;
+      templates.forEach(t => t.el.style.setProperty('--grid-size', v + 'px'));
+    });
+
+    function showReadout(text, ev) {
+      liveReadout.textContent = text;
+      liveReadout.classList.add('is-visible');
+      liveReadout.style.left = (ev.clientX + 16) + 'px';
+      liveReadout.style.top = (ev.clientY + 16) + 'px';
+    }
+    function hideReadout() {
+      liveReadout.classList.remove('is-visible');
+    }
+
+    // Cache the FIGMA defaults (taken from computed style at first paint, before any session load)
+    const figmaDefaults = new Map();
+    function keyFor(el) { return tplFor(el).key + '|' + el.classList[0]; }
+
+    editableEls.forEach(el => {
+      const cs = getComputedStyle(el);
+      figmaDefaults.set(el, {
+        left: cs.left,
+        top: cs.top,
+        width: cs.width,
+        height: el.style.height || '',  // empty = auto/CSS-default
+      });
+    });
+
+    // Cache default text for every contenteditable (so reset can restore it)
+    const textEls = Array.from(document.querySelectorAll('.template [contenteditable="true"]'));
+    const textDefaults = new Map();
+    textEls.forEach((el, i) => {
+      el.dataset.tkey = tplFor(el).key + ':' + i;
+      textDefaults.set(el, el.innerHTML);
+    });
+
+    function initEditable(el) {
+      el.classList.add('editable');
+
+      const move = document.createElement('div');
+      move.className = 'edit-handle move-handle';
+      move.textContent = '✥';
+      move.title = 'Drag to move';
+      el.appendChild(move);
+
+      const resize = document.createElement('div');
+      resize.className = 'edit-handle resize-handle';
+      resize.textContent = '⤡';
+      resize.title = 'Drag to resize';
+      el.appendChild(resize);
+
+      move.addEventListener('mousedown', (e) => startDrag(el, e, move, 'move'));
+      resize.addEventListener('mousedown', (e) => startDrag(el, e, resize, 'resize'));
+
+      // Clicking an element SELECTS it (pins its handles visible — they no longer
+      // vanish when the cursor leaves on the way to grab them).
+      // Body drag-to-move: Alt+drag anywhere, or plain drag on non-text areas.
+      // Clicking text still places the caret for editing; move it via the pinned
+      // handles, Alt+drag, or arrow keys.
+      el.addEventListener('mousedown', (e) => {
+        if (e.target.closest('.edit-handle')) return;
+        if (e.target.closest('[data-editable]') !== el) return;  // let nested editables win
+        selectEl(el);
+        if (e.ctrlKey) return;  // Ctrl+drag is reserved for photo crop panning
+        const inText = e.target.closest('[contenteditable="true"]');
+        if (e.altKey || !inText) startDrag(el, e, move, 'move');
+      });
+    }
+
+    function startDrag(el, e, handle, mode) {
+      e.preventDefault();
+      e.stopPropagation();
+      handle.classList.add('is-active');
+
+      const scale = tplFor(el).scale;
+      const startX = e.clientX, startY = e.clientY;
+      const cs = getComputedStyle(el);
+      const startL = parseFloat(cs.left) || 0;
+      const startT = parseFloat(cs.top) || 0;
+      const startW = el.offsetWidth;
+      const startH = el.offsetHeight;
+      const lockAspect = el.dataset.lockAspect === 'true';
+      const ratio = startH === 0 ? 1 : startW / startH;
+      let changed = false;
+
+      function onMove(ev) {
+        const dx = (ev.clientX - startX) / scale;
+        const dy = (ev.clientY - startY) / scale;
+        changed = (dx !== 0 || dy !== 0);
+
+        if (mode === 'move') {
+          const l = snap(startL + dx);
+          const t = snap(startT + dy);
+          el.style.left = l + 'px';
+          el.style.top = t + 'px';
+          showReadout(`x: ${Math.round(l)}  y: ${Math.round(t)}`, ev);
+        } else {
+          let w = startW + dx;
+          let h = startH + dy;
+          if (lockAspect) {
+            if (Math.abs(dx) >= Math.abs(dy)) h = w / ratio;
+            else w = h * ratio;
+          }
+          w = Math.max(10, snap(w));
+          h = Math.max(10, snap(h));
+          el.style.width = w + 'px';
+          el.style.height = h + 'px';
+          showReadout(`w: ${Math.round(w)}  h: ${Math.round(h)}`, ev);
+        }
+      }
+      function onUp() {
+        handle.classList.remove('is-active');
+        hideReadout();
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+        if (changed) {
+          pushHistory();
+          saveSession();
+          // Swallow the click that fires right after a real drag (e.g. so the
+          // photo box doesn't pop the file picker after being moved)
+          window.__justDragged = true;
+          setTimeout(() => { window.__justDragged = false; }, 0);
+        }
+      }
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+    }
+
+    editableEls.forEach(initEditable);
+
+    // ====== Media crop: zoom/pan the CONTENT inside a box (photo or video) ======
+    // Scroll wheel over the box = zoom · Ctrl+drag = reposition the content.
+    // The box itself never moves — only what's inside it. Works on the author
+    // photos AND the background video containers of both templates.
+    const cropState = new Map();  // box el → { zoom, x, y }
+
+    function cropMedia(box) {
+      return box.querySelector('img, video');
+    }
+    function applyCrop(box) {
+      const media = cropMedia(box);
+      if (!media) return;
+      const s = cropState.get(box) || { zoom: 1, x: 0, y: 0 };
+      media.style.transform = `translate(${s.x}px, ${s.y}px) scale(${s.zoom})`;
+    }
+    function clampCrop(box, s) {
+      // Keep the content covering the box. Uses the media's REAL rendered size under
+      // object-fit: cover — a 16:9 video in a wider/shorter frame overflows even at
+      // zoom 1×, and that overflow is pannable (previously zoom 1× allowed no movement).
+      let maxX = box.offsetWidth * (s.zoom - 1) / 2;
+      let maxY = box.offsetHeight * (s.zoom - 1) / 2;
+      const media = cropMedia(box);
+      const natW = media && (media.videoWidth || media.naturalWidth);
+      const natH = media && (media.videoHeight || media.naturalHeight);
+      if (natW && natH) {
+        const cover = Math.max(box.offsetWidth / natW, box.offsetHeight / natH);
+        maxX = Math.max(0, (natW * cover * s.zoom - box.offsetWidth) / 2);
+        maxY = Math.max(0, (natH * cover * s.zoom - box.offsetHeight) / 2);
+      }
+      s.x = Math.min(maxX, Math.max(-maxX, s.x));
+      s.y = Math.min(maxY, Math.max(-maxY, s.y));
+    }
+
+    templates.forEach(t => [t.photo, t.media].forEach(box => {
+
+      box.addEventListener('wheel', (e) => {
+        if (!cropMedia(box)) return;  // nothing uploaded yet → normal scroll
+        e.preventDefault();
+        const s = cropState.get(box) || { zoom: 1, x: 0, y: 0 };
+        s.zoom = Math.min(8, Math.max(1, s.zoom * (e.deltaY < 0 ? 1.1 : 1 / 1.1)));
+        if (s.zoom <= 1.001) { s.zoom = 1; s.x = 0; s.y = 0; }
+        clampCrop(box, s);
+        cropState.set(box, s);
+        applyCrop(box);
+        showReadout(`zoom: ${s.zoom.toFixed(2)}×`, e);
+        clearTimeout(box.__zoomHide);
+        box.__zoomHide = setTimeout(hideReadout, 900);
+      }, { passive: false });
+
+      box.addEventListener('mousedown', (e) => {
+        if (!e.ctrlKey) return;
+        if (e.target.closest('.edit-handle')) return;
+        if (!cropMedia(box)) return;
+        e.preventDefault();
+        const s = cropState.get(box) || { zoom: 1, x: 0, y: 0 };
+        const scale = tplFor(box).scale;
+        const startX = e.clientX, startY = e.clientY, ox = s.x, oy = s.y;
+        function onMove(ev) {
+          s.x = ox + (ev.clientX - startX) / scale;
+          s.y = oy + (ev.clientY - startY) / scale;
+          clampCrop(box, s);
+          cropState.set(box, s);
+          applyCrop(box);
+          showReadout(`content x: ${Math.round(s.x)}  y: ${Math.round(s.y)}`, ev);
+        }
+        function onUp() {
+          hideReadout();
+          document.removeEventListener('mousemove', onMove);
+          document.removeEventListener('mouseup', onUp);
+          window.__justDragged = true;
+          setTimeout(() => { window.__justDragged = false; }, 0);
+        }
+        document.addEventListener('mousemove', onMove);
+        document.addEventListener('mouseup', onUp);
+      });
+    }));
+
+    // ====== Section nav (rebuilt per active template) ======
+    const sectionList = document.getElementById('sectionList');
+    let selectedEl = null;
+    let navItemByEl = new Map();
+
+    function buildNav() {
+      sectionList.innerHTML = '';
+      navItemByEl = new Map();
+      active.editables.forEach(el => {
+        const name = el.dataset.name || el.classList[0];
+        const li = document.createElement('li');
+        li.textContent = name;
+        li.addEventListener('mouseenter', () => el.classList.add('is-highlighted'));
+        li.addEventListener('mouseleave', () => el.classList.remove('is-highlighted'));
+        li.addEventListener('click', () => toggleSelect(el));
+        sectionList.appendChild(li);
+        navItemByEl.set(el, li);
+      });
+    }
+
+    function selectEl(el) {
+      if (selectedEl === el) return;
+      clearSelection();
+      el.classList.add('is-selected');
+      navItemByEl.get(el)?.classList.add('is-active');
+      selectedEl = el;
+    }
+    function toggleSelect(el) {
+      if (selectedEl === el) { clearSelection(); return; }
+      selectEl(el);
+    }
+    function clearSelection() {
+      if (selectedEl) {
+        selectedEl.classList.remove('is-selected');
+        navItemByEl.get(selectedEl)?.classList.remove('is-active');
+      }
+      selectedEl = null;
+    }
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') clearSelection();
+    });
+
+    // Clicking empty canvas (no element under cursor) deselects
+    templates.forEach(t => {
+      t.el.addEventListener('mousedown', (e) => {
+        if (e.target.closest('[data-editable]') || e.target.closest('.edit-handle')) return;
+        clearSelection();
+      });
+    });
+
+    // Arrow-key nudge for the selected element (1px, Shift = 10px)
+    let nudgeCommitTimer = null;
+    document.addEventListener('keydown', (e) => {
+      if (!selectedEl) return;
+      if (document.activeElement && document.activeElement.isContentEditable) return;
+      let dx = 0, dy = 0;
+      const step = e.shiftKey ? 10 : 1;
+      if (e.key === 'ArrowLeft') dx = -step;
+      else if (e.key === 'ArrowRight') dx = step;
+      else if (e.key === 'ArrowUp') dy = -step;
+      else if (e.key === 'ArrowDown') dy = step;
+      else return;
+      e.preventDefault();
+      const cs = getComputedStyle(selectedEl);
+      const l = (parseFloat(cs.left) || 0) + dx;
+      const t = (parseFloat(cs.top) || 0) + dy;
+      selectedEl.style.left = l + 'px';
+      selectedEl.style.top = t + 'px';
+      // Commit one history entry after the burst of keypresses settles
+      clearTimeout(nudgeCommitTimer);
+      nudgeCommitTimer = setTimeout(() => { pushHistory(); saveSession(); }, 500);
+    });
+
+    buildNav();
+
+    // ====== Template switching (never reloads — all edits stay) ======
+    const tabT1 = document.getElementById('tabT1');
+    const tabT2 = document.getElementById('tabT2');
+    const timelineHint = document.getElementById('timelineHint');
+
+    function setTemplate(key) {
+      const tpl = templates.find(t => t.key === key);
+      if (!tpl || tpl === active) return;
+      pause();
+      clearSelection();
+      photoTarget = null;
+      active = tpl;
+      templates.forEach(t => {
+        t.stage.style.display = (t === active) ? '' : 'none';
+        t.el.classList.toggle('show-grid', t === active && gridToggle.checked);
+      });
+      tabT1.classList.toggle('is-active', active.key === 't1');
+      tabT2.classList.toggle('is-active', active.key === 't2');
+      timelineHint.textContent = (active.key === 't1')
+        ? 'Drag the slider to scrub. Switch to Preview mode to see animations applied at the current frame.'
+        : 'Fullscreen video → black panel slides up 4s–6s → glows fade/rise 6s–8s. Scrub or hit Play to preview.';
+      buildNav();
+    }
+
+    tabT1.addEventListener('click', () => setTemplate('t1'));
+    tabT2.addEventListener('click', () => setTemplate('t2'));
+
+    // ====== Animation system ======
+    const FPS = 24;
+    const TOTAL_FRAMES = 240;           // 10 seconds at 24fps
+    const FRAME_MS = 1000 / FPS;
+
+    // Cubic-bezier solver (like CSS cubic-bezier / AE keyframe influence)
+    function cubicBezier(x1, y1, x2, y2) {
+      const cx = 3 * x1, bx = 3 * (x2 - x1) - cx, ax = 1 - cx - bx;
+      const cy = 3 * y1, by = 3 * (y2 - y1) - cy, ay = 1 - cy - by;
+      const sampleX = t => ((ax * t + bx) * t + cx) * t;
+      const sampleY = t => ((ay * t + by) * t + cy) * t;
+      const sampleDX = t => (3 * ax * t + 2 * bx) * t + cx;
+      return (x) => {
+        if (x <= 0) return 0;
+        if (x >= 1) return 1;
+        let t = x;
+        for (let i = 0; i < 8; i++) {
+          const e = sampleX(t) - x;
+          if (Math.abs(e) < 1e-5) break;
+          const d = sampleDX(t);
+          if (Math.abs(d) < 1e-6) break;
+          t -= e / d;
+        }
+        return sampleY(Math.max(0, Math.min(1, t)));
+      };
+    }
+
+    const easings = {
+      linear: t => t,
+      easeIn: t => t * t,
+      easeOut: t => 1 - (1 - t) * (1 - t),
+      easeInOut: t => t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2,
+      // AE-style: ease out 40% (outgoing) / ease in 70% (incoming)
+      easeIn70Out40: cubicBezier(0.4, 0, 0.3, 1),
+    };
+
+    // Each entry: { target: CSS selector, prop, from, to, startFrame, endFrame, ease }
+    // Props: x, y, scale, rotation (combined into transform), opacity
+    const animations = [
+      // Insight (dot is parent; label follows via DOM hierarchy)
+      { target: '.insight-dot', prop: 'x', from: -19.8049, to: 0, startFrame: 0, endFrame: 7, ease: 'easeOut' },
+      { target: '.insight-dot', prop: 'opacity', from: 0, to: 1, startFrame: 0, endFrame: 7, ease: 'linear' },
+
+      // Bottom black gradient — fade in from 2s to 4s
+      { target: '.gradient', prop: 'opacity', from: 0, to: 1, startFrame: 48, endFrame: 96, ease: 'linear' },
+
+      // Glow ellipses (group): fade 0→100% and drift (292, 1575.5) → (327.5, 1546.5) over f120–f144
+      { target: '.t1-glows', prop: 'opacity', from: 0, to: 1, startFrame: 120, endFrame: 144, ease: 'linear' },
+      { target: '.t1-glows', prop: 'x', from: -35.5, to: 0, startFrame: 120, endFrame: 144, ease: 'easeOut' },
+      { target: '.t1-glows', prop: 'y', from: 29, to: 0, startFrame: 120, endFrame: 144, ease: 'easeOut' },
+
+      // Meta line (under the title): slides in from left + fades in (slightly delayed fade)
+      { target: '.meta', prop: 'x', from: -298.746, to: 0, startFrame: 0, endFrame: 7, ease: 'easeOut' },
+      { target: '.meta', prop: 'opacity', from: 0, to: 0.5, startFrame: 2, endFrame: 10, ease: 'linear' },
+
+      // Author photo — fade in over 10 frames
+      { target: '.author-photo', prop: 'opacity', from: 0, to: 1, startFrame: 0, endFrame: 10, ease: 'linear' },
+
+      // Author info — fade in from frame 7 to 16 (each respects its CSS default visible opacity)
+      { target: '.written-by', prop: 'opacity', from: 0, to: 0.5, startFrame: 7, endFrame: 16, ease: 'linear' },
+      { target: '.author-name', prop: 'opacity', from: 0, to: 1, startFrame: 7, endFrame: 16, ease: 'linear' },
+      { target: '.author-role', prop: 'opacity', from: 0, to: 0.5, startFrame: 7, endFrame: 16, ease: 'linear' },
+
+      // ---- Template 2 ----
+      // Video is fullscreen until the black panel slides up from the bottom: 4s → 6s.
+      // Starts at 266 (not its exact 260.05 height) so it parks a few px BELOW the
+      // canvas edge — at exactly 400 its antialiased top edge leaked a dark line
+      // into the bottom of the fullscreen video.
+      { target: '.t2-blackbox', prop: 'y', from: 266, to: 0, startFrame: 96, endFrame: 144, ease: 'easeIn70Out40' },
+      // Author block: exact inverse of the panel's motion → stays fixed on the canvas,
+      // the panel's top edge just reveals it as it slides up
+      { target: '.t2-authorgroup', prop: 'y', from: -266, to: 0, startFrame: 96, endFrame: 144, ease: 'easeIn70Out40' },
+
+      // Glow ellipses (inside the black box): fade 0% → 100% over 6s → 8s
+      { target: '.t2-glow-1', prop: 'opacity', from: 0, to: 1, startFrame: 144, endFrame: 192, ease: 'linear' },
+      { target: '.t2-glow-2', prop: 'opacity', from: 0, to: 0.45, startFrame: 144, endFrame: 192, ease: 'linear' },
+      // ...and rise from y 1936 / 1336 to their resting spots over the same window
+      { target: '.t2-glow-1', prop: 'y', from: 1627.05, to: 0, startFrame: 144, endFrame: 192, ease: 'easeIn70Out40' },  // 1936 - 308.95
+      { target: '.t2-glow-2', prop: 'y', from: 663.98, to: 0, startFrame: 144, endFrame: 192, ease: 'easeIn70Out40' },  // 1336 - 672.02
+    ];
+
+    // Title line-by-line reveal animations: width is re-measured before preview/export
+    // so edited text still gets a full reveal
+    const TITLE_FEATHER = 94;     // template 1
+    const T2_TITLE_FEATHER = 76;  // template 2
+    const titleRevealAnims = [];
+
+    const titleLineFrames = [[0, 18], [11, 29], [21, 39]];
+    document.querySelectorAll('#template .title-line').forEach((line, i) => {
+      if (i >= titleLineFrames.length) return;
+      const anim = {
+        target: line,
+        prop: 'revealPos',
+        from: 0,
+        to: line.offsetWidth + TITLE_FEATHER,
+        startFrame: titleLineFrames[i][0],
+        endFrame: titleLineFrames[i][1],
+        ease: 'easeOut',
+        feather: TITLE_FEATHER,
+      };
+      animations.push(anim);
+      titleRevealAnims.push(anim);
+    });
+
+    // Template 2 title: line 1 f0–f36, line 2 f13–f42, feather 76px
+    const t2TitleLineFrames = [[0, 36], [13, 42]];
+    document.querySelectorAll('#template2 .t2-title-line').forEach((line, i) => {
+      if (i >= t2TitleLineFrames.length) return;
+      const anim = {
+        target: line,
+        prop: 'revealPos',
+        from: 0,
+        to: line.offsetWidth + T2_TITLE_FEATHER,  // 0 while hidden — refreshed on preview
+        startFrame: t2TitleLineFrames[i][0],
+        endFrame: t2TitleLineFrames[i][1],
+        ease: 'easeOut',
+        feather: T2_TITLE_FEATHER,
+      };
+      animations.push(anim);
+      titleRevealAnims.push(anim);
+    });
+
+    function refreshTitleReveals() {
+      // Only the visible template's lines have a measurable width
+      titleRevealAnims.forEach(a => {
+        if (!active.el.contains(a.target)) return;
+        const w = a.target.offsetWidth;
+        if (w) a.to = w + a.feather;
+      });
+    }
+
+    function resolveTarget(t) {
+      return typeof t === 'string' ? document.querySelector(t) : t;
+    }
+
+    function allAnimTargets() {
+      const set = new Set();
+      animations.forEach(a => {
+        const el = resolveTarget(a.target);
+        if (el) set.add(el);
+      });
+      return set;
+    }
+
+    function evalAnim(anim, frame) {
+      let t;
+      if (frame <= anim.startFrame) t = 0;
+      else if (frame >= anim.endFrame) t = 1;
+      else t = (frame - anim.startFrame) / (anim.endFrame - anim.startFrame);
+      t = (easings[anim.ease] || easings.linear)(t);
+      return anim.from + (anim.to - anim.from) * t;
+    }
+
+    function clearAnimStyles() {
+      allAnimTargets().forEach(el => {
+        el.style.transform = '';
+        el.style.opacity = '';
+        el.style.removeProperty('--reveal');
+      });
+    }
+
+    function renderFrame(frame) {
+      clearAnimStyles();
+      const perTarget = new Map();
+      animations.forEach(a => {
+        const el = resolveTarget(a.target);
+        if (!el) return;
+        if (!perTarget.has(el)) perTarget.set(el, { x: 0, y: 0, scale: 1, rot: 0, opacity: null, revealPos: null });
+        const v = evalAnim(a, frame);
+        const s = perTarget.get(el);
+        if (a.prop === 'x') s.x = v;
+        else if (a.prop === 'y') s.y = v;
+        else if (a.prop === 'scale') s.scale = v;
+        else if (a.prop === 'rotation') s.rot = v;
+        else if (a.prop === 'opacity') s.opacity = v;
+        else if (a.prop === 'revealPos') s.revealPos = v;
+      });
+      perTarget.forEach((s, el) => {
+        const parts = [];
+        if (s.x || s.y) parts.push(`translate(${s.x}px, ${s.y}px)`);
+        if (s.scale !== 1) parts.push(`scale(${s.scale})`);
+        if (s.rot) parts.push(`rotate(${s.rot}deg)`);
+        // Elements with a static transform in CSS (e.g. rotated glows) declare it in
+        // data-base-transform so the animated transform composes instead of clobbering it
+        const base = el.dataset.baseTransform || '';
+        if (parts.length) el.style.transform = parts.join(' ') + (base ? ' ' + base : '');
+        if (s.opacity !== null) el.style.opacity = s.opacity;
+        if (s.revealPos !== null) el.style.setProperty('--reveal', s.revealPos + 'px');
+      });
+    }
+
+    // Mode: 'edit' (no animation applied — for positioning work)
+    //       'preview' (animations applied at currentFrame)
+    let mode = 'edit';
+    let currentFrame = 0;
+    let isPlaying = false;
+    let playStartTime = 0;
+    let playStartFrame = 0;
+
+    const modeBtn = document.getElementById('modeBtn');
+    const playBtn = document.getElementById('playBtn');
+    const stopBtn = document.getElementById('stopBtn');
+    const frameDisplay = document.getElementById('frameDisplay');
+    const timelineEl = document.getElementById('timeline');
+
+    timelineEl.max = String(TOTAL_FRAMES - 1);
+
+    function fmtTime(frame) {
+      const seconds = frame / FPS;
+      return seconds.toFixed(2).padStart(5, '0') + 's';
+    }
+    function updateFrameUI() {
+      frameDisplay.textContent =
+        String(currentFrame).padStart(3, '0') + ' / ' + (TOTAL_FRAMES) +
+        ' · ' + fmtTime(currentFrame) + ' / ' + (TOTAL_FRAMES / FPS).toFixed(2) + 's · ' + FPS + 'fps';
+      timelineEl.value = String(currentFrame);
+    }
+
+    function setMode(m) {
+      mode = m;
+      modeBtn.textContent = (m === 'edit') ? 'Edit mode' : 'Preview mode';
+      modeBtn.classList.toggle('is-active', m === 'preview');
+      if (m === 'edit') {
+        clearAnimStyles();
+      } else {
+        refreshTitleReveals();
+        renderFrame(currentFrame);
+      }
+    }
+
+    function activeVideo() {
+      return active.media.querySelector('video');
+    }
+
+    function play() {
+      if (isPlaying) return;
+      setMode('preview');
+      if (currentFrame >= TOTAL_FRAMES - 1) currentFrame = 0;
+      playStartFrame = currentFrame;
+      playStartTime = performance.now();
+      isPlaying = true;
+      playBtn.textContent = '⏸ Pause';
+      // Video runs ONLY while the timeline plays, locked to the current frame
+      const v = activeVideo();
+      if (v) {
+        v.loop = loopToggle.checked;
+        try { v.currentTime = videoTimeForFrame(v, currentFrame); } catch (e) { }
+        v.play().catch(() => { });
+      }
+      requestAnimationFrame(tick);
+    }
+    function pause() {
+      isPlaying = false;
+      playBtn.textContent = '▶ Play';
+      const v = activeVideo();
+      if (v) v.pause();
+    }
+    function stop() {
+      pause();
+      currentFrame = 0;
+      const v = activeVideo();
+      if (v) { try { v.currentTime = 0; } catch (e) { } }
+      updateFrameUI();
+      if (mode === 'preview') renderFrame(0);
+    }
+
+    function tick() {
+      if (!isPlaying) return;
+      const elapsed = performance.now() - playStartTime;
+      let f = playStartFrame + Math.floor(elapsed / FRAME_MS);
+      if (f >= TOTAL_FRAMES) {
+        currentFrame = TOTAL_FRAMES - 1;
+        renderFrame(currentFrame);
+        updateFrameUI();
+        pause();
+        return;
+      }
+      currentFrame = f;
+      renderFrame(currentFrame);
+      updateFrameUI();
+      requestAnimationFrame(tick);
+    }
+
+    modeBtn.addEventListener('click', () => setMode(mode === 'edit' ? 'preview' : 'edit'));
+    playBtn.addEventListener('click', () => isPlaying ? pause() : play());
+    stopBtn.addEventListener('click', stop);
+    timelineEl.addEventListener('input', () => {
+      pause();
+      currentFrame = parseInt(timelineEl.value, 10);
+      if (mode === 'edit') setMode('preview');
+      renderFrame(currentFrame);
+      updateFrameUI();
+      seekVideoToFrame(currentFrame);  // keep the video frame in step while scrubbing
+    });
+
+    // Spacebar toggles play (when not typing)
+    document.addEventListener('keydown', (e) => {
+      if (document.activeElement && document.activeElement.isContentEditable) return;
+      if (e.code === 'Space') {
+        e.preventDefault();
+        isPlaying ? pause() : play();
+      }
+    });
+
+    updateFrameUI();
+
+    // ====== Export to MP4 (exports the ACTIVE template at its own size) ======
+    const exportBtn = document.getElementById('exportBtn');
+
+    function setBtnLabel(text) { exportBtn.textContent = text; }
+
+    // Map a timeline frame to a video time, honoring the loop/freeze setting.
+    // (Without the modulo, exports froze on the last frame while previews looped.)
+    function videoTimeForFrame(v, frame) {
+      let t = frame / FPS;
+      const dur = v.duration;
+      if (dur && isFinite(dur) && t > dur) {
+        t = loopToggle.checked ? (t % dur) : Math.max(0, dur - 0.001);
+      }
+      return t;
+    }
+
+    async function seekVideoToFrame(frame) {
+      const v = active.media.querySelector('video');
+      if (!v) return;
+      const t = videoTimeForFrame(v, frame);
+      if (Math.abs(v.currentTime - t) < 0.01) return;
+      v.pause();
+      return new Promise((res) => {
+        const onSeeked = () => { v.removeEventListener('seeked', onSeeked); res(); };
+        v.addEventListener('seeked', onSeeked);
+        try { v.currentTime = t; } catch { res(); }
+      });
+    }
+
+    // Convert every <img> under root to a data URL once, so the per-frame capture
+    // doesn't re-fetch and re-encode them 240 times.
+    async function inlineImages(root) {
+      const imgs = Array.from(root.querySelectorAll('img')).filter(i => i.src && !i.src.startsWith('data:'));
+      await Promise.all(imgs.map(async (img) => {
+        try {
+          const blob = await (await fetch(img.src)).blob();
+          const dataUrl = await new Promise((res, rej) => {
+            const fr = new FileReader();
+            fr.onload = () => res(fr.result);
+            fr.onerror = rej;
+            fr.readAsDataURL(blob);
+          });
+          img.src = dataUrl;
+          if (!img.complete) await new Promise(r => { img.onload = r; img.onerror = r; });
+        } catch (e) { /* keep original src */ }
+      }));
+    }
+
+    async function exportMp4() {
+      if (typeof window.VideoEncoder === 'undefined') {
+        alert('WebCodecs not available in this browser. Use Chrome or Edge desktop to export MP4.');
+        return;
+      }
+      if (!window.htmlToImage) {
+        alert('html-to-image library not loaded yet — wait a moment and try again.');
+        return;
+      }
+      if (!window.Mp4Muxer) {
+        alert('mp4-muxer not loaded yet — wait a moment and try again.');
+        return;
+      }
+
+      const tpl = active;
+      const OUT_W = tpl.width * tpl.exportScale;
+      const OUT_H = tpl.height * tpl.exportScale;
+
+      const prev = { mode, frame: currentFrame };
+      exportBtn.disabled = true;
+      document.body.style.pointerEvents = 'none';
+      exportBtn.style.pointerEvents = 'auto';
+
+      // Make sure NO editing chrome can render into the video: deselect, stop any
+      // in-progress text edit, drop the grid, and arm the is-exporting CSS overrides.
+      clearSelection();
+      if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+      const hadGrid = tpl.el.classList.contains('show-grid');
+      tpl.el.classList.remove('show-grid');
+      tpl.el.classList.add('is-exporting');
+
+      // Render at 1:1 (kill any stage scale just for this template) so capture matches the output size.
+      tpl.el.style.transform = 'none';
+
+      try {
+        setMode('preview');
+
+        // ---- One-time prep (this used to happen on EVERY frame) ----
+        setBtnLabel('Preparing…');
+        // Embed the webfonts once and reuse the CSS for all frames
+        let fontCSS = '';
+        try { fontCSS = await window.htmlToImage.getFontEmbedCSS(tpl.el); }
+        catch (e) { console.warn('font embed failed, falling back to per-frame fonts', e); }
+        // Inline static images (logos, svgs, uploaded photo) once
+        await inlineImages(tpl.el);
+        // Skip editing chrome — fewer nodes to serialize per frame
+        const captureFilter = (node) =>
+          !(node.classList && node.classList.contains('edit-handle'));
+
+        const { Muxer, ArrayBufferTarget } = window.Mp4Muxer;
+        const muxer = new Muxer({
+          target: new ArrayBufferTarget(),
+          video: { codec: 'avc', width: OUT_W, height: OUT_H, frameRate: FPS },
+          fastStart: 'in-memory',
+        });
+
+        let encoderError = null;
+        const encoder = new VideoEncoder({
+          output: (chunk, meta) => muxer.addVideoChunk(chunk, meta),
+          error: (e) => { encoderError = e; console.error('VideoEncoder error', e); },
+        });
+        encoder.configure({
+          codec: 'avc1.640028',
+          width: OUT_W,
+          height: OUT_H,
+          bitrate: 10_000_000,
+          framerate: FPS,
+        });
+
+        const startTime = performance.now();
+
+        for (let f = 0; f < TOTAL_FRAMES; f++) {
+          if (encoderError) throw encoderError;
+
+          currentFrame = f;
+          renderFrame(f);
+          updateFrameUI();
+          await seekVideoToFrame(f);
+          await new Promise(r => requestAnimationFrame(r));
+
+          const canvas = await window.htmlToImage.toCanvas(tpl.el, {
+            width: tpl.width,
+            height: tpl.height,
+            canvasWidth: OUT_W,
+            canvasHeight: OUT_H,
+            pixelRatio: tpl.exportScale,
+            cacheBust: false,
+            fontEmbedCSS: fontCSS,        // reuse — don't re-encode fonts per frame
+            filter: captureFilter,
+            style: { transform: 'none', transformOrigin: 'top left' },
+          });
+
+          const videoFrame = new VideoFrame(canvas, {
+            timestamp: f * (1_000_000 / FPS),
+            duration: 1_000_000 / FPS,
+          });
+          encoder.encode(videoFrame);
+          videoFrame.close();
+
+          const pct = Math.round(((f + 1) / TOTAL_FRAMES) * 100);
+          const perFrame = (performance.now() - startTime) / (f + 1);
+          const etaS = Math.round(perFrame * (TOTAL_FRAMES - f - 1) / 1000);
+          setBtnLabel(`Rendering ${f + 1}/${TOTAL_FRAMES} (${pct}%) · ~${etaS}s left`);
+        }
+
+        setBtnLabel('Finalizing…');
+        await encoder.flush();
+        muxer.finalize();
+        encoder.close();
+
+        const { buffer } = muxer.target;
+        const blob = new Blob([buffer], { type: 'video/mp4' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = tpl.fileName;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+
+        const elapsed = ((performance.now() - startTime) / 1000).toFixed(1);
+        setBtnLabel(`✓ Done — ${elapsed}s`);
+        setTimeout(() => setBtnLabel('⬇ Export MP4 (10s)'), 4000);
+      } catch (e) {
+        console.error(e);
+        alert('Export failed: ' + (e && e.message ? e.message : e));
+        setBtnLabel('⬇ Export MP4 (10s)');
+      } finally {
+        tpl.el.classList.remove('is-exporting');
+        if (hadGrid) tpl.el.classList.add('show-grid');
+        tpl.el.style.transform = '';
+        exportBtn.disabled = false;
+        document.body.style.pointerEvents = '';
+        currentFrame = prev.frame;
+        setMode(prev.mode);
+        updateFrameUI();
+      }
+    }
+
+    exportBtn.addEventListener('click', exportMp4);
+
+    // ====== Session persistence (sessionStorage) ======
+    // Edits (positions + text) survive while this tab is open — even an accidental F5.
+    // Close the tab and reopen → everything resets to the Figma defaults.
+    const SS_KEY = 'mofu-templates-session-v6'; // v6: t2 media bleeds 2px past edges, black box parks lower
+    try { localStorage.removeItem('mofu-template-layout-v2'); } catch (e) { }  // old persistent key, no longer used
+
+    function snapshotLayout() {
+      const data = {};
+      editableEls.forEach(el => {
+        const cs = getComputedStyle(el);
+        data[keyFor(el)] = {
+          left: el.style.left || cs.left,
+          top: el.style.top || cs.top,
+          width: el.style.width || cs.width,
+          height: el.style.height || '',
+        };
+      });
+      return data;
+    }
+
+    function snapshotText() {
+      const data = {};
+      textEls.forEach(el => { data[el.dataset.tkey] = el.innerHTML; });
+      return data;
+    }
+
+    function applyLayout(data) {
+      editableEls.forEach(el => {
+        const s = data[keyFor(el)];
+        if (!s) return;
+        el.style.left = s.left;
+        el.style.top = s.top;
+        el.style.width = s.width;
+        el.style.height = s.height || '';
+      });
+    }
+
+    function applyText(data) {
+      textEls.forEach(el => {
+        const html = data[el.dataset.tkey];
+        if (html !== undefined && html !== el.innerHTML) el.innerHTML = html;
+      });
+    }
+
+    function saveSession() {
+      try {
+        sessionStorage.setItem(SS_KEY, JSON.stringify({ layout: snapshotLayout(), text: snapshotText() }));
+      } catch (e) { }
+    }
+
+    function loadSession() {
+      try {
+        const raw = sessionStorage.getItem(SS_KEY);
+        if (!raw) return false;
+        const data = JSON.parse(raw);
+        if (data.layout) applyLayout(data.layout);
+        if (data.text) applyText(data.text);
+        return true;
+      } catch (e) { return false; }
+    }
+
+    // Restore this tab's session (survives F5, gone after closing the tab)
+    loadSession();
+
+    // Save text edits as you type (debounced)
+    let textSaveTimer = null;
+    textEls.forEach(el => {
+      el.addEventListener('input', () => {
+        clearTimeout(textSaveTimer);
+        textSaveTimer = setTimeout(saveSession, 400);
+      });
+    });
+
+    // ====== Undo / Redo history (layout only) ======
+    const HIST_LIMIT = 100;
+    const history = [snapshotLayout()];
+    let histIndex = 0;
+
+    function pushHistory() {
+      history.splice(histIndex + 1);
+      history.push(snapshotLayout());
+      if (history.length > HIST_LIMIT) history.shift();
+      histIndex = history.length - 1;
+      updateUndoRedoButtons();
+    }
+
+    function undo() {
+      if (histIndex <= 0) return;
+      histIndex--;
+      applyLayout(history[histIndex]);
+      saveSession();
+      updateUndoRedoButtons();
+    }
+    function redo() {
+      if (histIndex >= history.length - 1) return;
+      histIndex++;
+      applyLayout(history[histIndex]);
+      saveSession();
+      updateUndoRedoButtons();
+    }
+
+    const undoBtn = document.getElementById('undoBtn');
+    const redoBtn = document.getElementById('redoBtn');
+    function updateUndoRedoButtons() {
+      undoBtn.disabled = histIndex <= 0;
+      redoBtn.disabled = histIndex >= history.length - 1;
+      undoBtn.style.opacity = undoBtn.disabled ? 0.4 : 1;
+      redoBtn.style.opacity = redoBtn.disabled ? 0.4 : 1;
+    }
+    updateUndoRedoButtons();
+
+    undoBtn.addEventListener('click', undo);
+    redoBtn.addEventListener('click', redo);
+
+    // Keyboard shortcuts — don't hijack while typing in contenteditable
+    document.addEventListener('keydown', (e) => {
+      const inText = document.activeElement && document.activeElement.isContentEditable;
+      if (inText) return;
+      const mod = e.ctrlKey || e.metaKey;
+      if (!mod) return;
+      if (e.key === 'z' && !e.shiftKey) { e.preventDefault(); undo(); }
+      else if ((e.key === 'y') || (e.key === 'Z' && e.shiftKey) || (e.key === 'z' && e.shiftKey)) {
+        e.preventDefault(); redo();
+      }
+    });
+
+    // ====== Copy CSS export (active template only) ======
+    const copyCssBtn = document.getElementById('copyCssBtn');
+    function exportCss() {
+      const lines = [];
+      active.editables.forEach(el => {
+        const cs = getComputedStyle(el);
+        const parts = [
+          `left: ${el.style.left || cs.left};`,
+          `top: ${el.style.top || cs.top};`,
+          `width: ${el.style.width || cs.width};`,
+        ];
+        if (el.style.height) parts.push(`height: ${el.style.height};`);
+        lines.push(`.${el.classList[0]} { ${parts.join(' ')} }`);
+      });
+      return lines.join('\n');
+    }
+    copyCssBtn.addEventListener('click', async () => {
+      const css = exportCss();
+      try {
+        await navigator.clipboard.writeText(css);
+        copyCssBtn.textContent = '✓ Copied! Paste it to Claude to bake into the file';
+        setTimeout(() => copyCssBtn.textContent = 'Copy CSS of current positions (active template)', 2500);
+      } catch (e) {
+        // Fallback: open a prompt with the CSS for manual copy
+        window.prompt('Copy this CSS:', css);
+      }
+    });
+
+    // ====== Reset (active template only) ======
+    resetBtn.addEventListener('click', () => {
+      if (!confirm(`Reset "${active.name}" to Figma defaults? (positions, text, and uploaded media)`)) return;
+
+      // Restore positions
+      active.editables.forEach(el => {
+        const orig = figmaDefaults.get(el);
+        if (!orig) return;
+        el.style.left = orig.left;
+        el.style.top = orig.top;
+        el.style.width = orig.width;
+        el.style.height = orig.height || '';
+      });
+
+      // Restore text
+      textEls.forEach(el => {
+        if (tplFor(el) !== active) return;
+        el.innerHTML = textDefaults.get(el);
+      });
+
+      // Clear media
+      active.media.querySelectorAll('video, img').forEach(n => n.remove());
+      active.photo.querySelectorAll('img').forEach(n => n.remove());
+      cropState.delete(active.photo);
+      cropState.delete(active.media);
+      if (active.key === 't1') {
+        overlayRotated.innerHTML = '';
+        overlayInput.value = '';
+      }
+      videoInput.value = '';
+      photoInput.value = '';
+
+      pushHistory();
+      saveSession();
+    });
+  </script>
+
+</body>
+
+</html>
